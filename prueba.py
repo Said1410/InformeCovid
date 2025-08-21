@@ -122,20 +122,48 @@ st.dataframe(subset_plot.describe().T)
 # ———————————————————————————————————————————————
 # 2. Estadística descriptiva y avanzada
 # ———————————————————————————————————————————————
-st.header("2) Estadística descriptiva y avanzada")
+# ———————————————————————————————————————————————
+# 2) Métricas avanzadas por país
+# ———————————————————————————————————————————————
+import pandas as pd
+import numpy as np
+from scipy.stats import binom
+from statsmodels.stats.proportion import proportions_ztest
+import streamlit as st
 
-# 2.1. Métricas clave por país: Confirmados, Fallecidos, CFR y tasas por 100k
-st.header("📊 Métricas por país seleccionadas")
+# Columnas clave
+C = cols["confirmed"]
+D = cols["deaths"]
 
-# Selección del país
-pais_seleccionado = st.selectbox("Selecciona un país", df_grouped[country_col].tolist())
+# Agrupar por país y calcular métricas
+df_grouped = df.groupby(cols["country"]).agg({C: "sum", D: "sum"}).reset_index()
+df_grouped = df_grouped.rename(columns={cols["country"]: "Country"})  # renombrar para simplificar
 
-# Filtrar datos
-df_pais = df_grouped[df_grouped[country_col] == pais_seleccionado].iloc[0]
+# Calcular CFR y tasas por 100k
+df_grouped["CFR"] = df_grouped[D] / df_grouped[C]
+df_grouped["Confirmed_per_100k"] = df_grouped[C] / 1e6 * 100000  # población estimada
+df_grouped["Deaths_per_100k"] = df_grouped[D] / 1e6 * 100000
 
-# Mostrar métricas clave con st.metric
+# Intervalo de confianza binomial
+def cfr_ci(deaths, confirmed, alpha=0.05):
+    if confirmed == 0:
+        return (0, 0)
+    ci_low, ci_high = binom.interval(1-alpha, confirmed, deaths/confirmed)
+    return ci_low/confirmed, ci_high/confirmed
+
+df_grouped["CFR_CI"] = df_grouped.apply(lambda row: cfr_ci(row[D], row[C]), axis=1)
+
+# ———————————————————————————————————————————————
+# Selección de país y visualización de métricas
+# ———————————————————————————————————————————————
+st.header("📊 Métricas por país")
+
+pais_seleccionado = st.selectbox("Selecciona un país", df_grouped["Country"].tolist())
+df_pais = df_grouped[df_grouped["Country"] == pais_seleccionado].iloc[0]
+
 st.subheader(f"Métricas de COVID-19 en {pais_seleccionado}")
 
+# Mostrar métricas clave con st.metric
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Confirmados", f"{df_pais[C]:,}")
 col2.metric("Fallecidos", f"{df_pais[D]:,}")
@@ -145,59 +173,3 @@ col4.metric("Muertes/100k", f"{df_pais['Deaths_per_100k']:.2f}")
 # Intervalo de confianza para CFR
 ci_low, ci_high = df_pais["CFR_CI"]
 st.write(f"Intervalo de confianza CFR: {ci_low*100:.2f}% – {ci_high*100:.2f}%")
-
-# 2.2. Intervalos de confianza para CFR (binomial)
-from scipy.stats import binom
-def cfr_ci(deaths, confirmed, alpha=0.05):
-    if confirmed == 0:
-        return (0, 0)
-    ci_low, ci_upp = binom.interval(1-alpha, confirmed, deaths/confirmed)
-    return ci_low/confirmed, ci_upp/confirmed
-
-df_grouped["CFR_CI"] = df_grouped.apply(lambda row: cfr_ci(row[D], row[C]), axis=1)
-st.subheader("Intervalos de confianza de CFR")
-st.dataframe(df_grouped[[country_col, "CFR", "CFR_CI"]])
-
-# 2.3. Test de hipótesis de proporciones para comparar CFR entre dos países
-st.subheader("Comparación de CFR entre dos países")
-pais1 = st.selectbox("País 1", df_grouped[country_col].tolist())
-pais2 = st.selectbox("País 2", df_grouped[country_col].tolist(), index=1)
-
-from statsmodels.stats.proportion import proportions_ztest
-d1 = int(df_grouped.loc[df_grouped[country_col]==pais1, D])
-n1 = int(df_grouped.loc[df_grouped[country_col]==pais1, C])
-d2 = int(df_grouped.loc[df_grouped[country_col]==pais2, D])
-n2 = int(df_grouped.loc[df_grouped[country_col]==pais2, C])
-
-stat, pval = proportions_ztest([d1, d2], [n1, n2])
-st.write(f"Z-test estadístico: {stat:.3f}, p-value: {pval:.3f}")
-
-# 2.4. Detección de outliers usando Z-score
-from scipy.stats import zscore
-df_grouped["zscore_deaths"] = zscore(df_grouped[D].fillna(0))
-outliers = df_grouped[df_grouped["zscore_deaths"].abs() > 3]
-st.subheader("Outliers en fallecidos (|Z|>3)")
-st.dataframe(outliers[[country_col, D, "zscore_deaths"]])
-
-# 2.5. Gráfico de control (3σ) de muertes diarias
-st.subheader("Gráfico de control (3σ) de muertes")
-# Si hay columna de fecha
-if "Last_Update" in df.columns:
-    df["Last_Update"] = pd.to_datetime(df["Last_Update"])
-    daily_deaths = df.groupby("Last_Update")[D].sum()
-else:
-    # fallback si no hay fecha
-    daily_deaths = df.groupby(country_col)[D].sum()
-
-mean_deaths = daily_deaths.mean()
-std_deaths = daily_deaths.std()
-import matplotlib.pyplot as plt
-
-fig, ax = plt.subplots(figsize=(12,5))
-ax.plot(daily_deaths.index, daily_deaths.values, marker="o", label="Muertes diarias")
-ax.axhline(mean_deaths, color="green", linestyle="--", label="Media")
-ax.axhline(mean_deaths + 3*std_deaths, color="red", linestyle="--", label="+3σ")
-ax.axhline(mean_deaths - 3*std_deaths, color="red", linestyle="--", label="-3σ")
-plt.xticks(rotation=45)
-ax.legend()
-st.pyplot(fig)
