@@ -120,56 +120,89 @@ st.write("Resumen estadístico (simulación de boxplot):")
 st.dataframe(subset_plot.describe().T)
 
 # ———————————————————————————————————————————————
-# 2. Estadística descriptiva y avanzada
-# ———————————————————————————————————————————————
-# ———————————————————————————————————————————————
-# 2) Métricas avanzadas por país
+# 3) Modelado y proyecciones
 # ———————————————————————————————————————————————
 import pandas as pd
 import numpy as np
-from scipy.stats import binom
-from statsmodels.stats.proportion import proportions_ztest
+import matplotlib.pyplot as plt
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+from sklearn.metrics import mean_absolute_error, mean_absolute_percentage_error
 import streamlit as st
 
-# Columnas clave
-C = cols["confirmed"]
-D = cols["deaths"]
+st.header("3️⃣ Modelado y proyecciones COVID-19")
 
-# Agrupar por país y calcular métricas
-df_grouped = df.groupby(cols["country"]).agg({C: "sum", D: "sum"}).reset_index()
-df_grouped = df_grouped.rename(columns={cols["country"]: "Country"})  # renombrar para simplificar
+# Selección de país
+pais_model = st.selectbox("Selecciona un país para proyección", df_grouped["Country"].tolist())
 
-# Calcular CFR y tasas por 100k
-df_grouped["CFR"] = df_grouped[D] / df_grouped[C]
-df_grouped["Confirmed_per_100k"] = df_grouped[C] / 1e6 * 100000  # población estimada
-df_grouped["Deaths_per_100k"] = df_grouped[D] / 1e6 * 100000
+# Filtrar datos diarios del país
+if "Last_Update" in df.columns:
+    df["Last_Update"] = pd.to_datetime(df["Last_Update"])
+    df_pais_daily = df[df[cols["country"]] == pais_model].groupby("Last_Update")[C, D].sum()
+else:
+    st.warning("No hay columna de fecha para generar series de tiempo.")
+    df_pais_daily = df.groupby(cols["country"])[C, D].sum().to_frame().T
 
-# Intervalo de confianza binomial
-def cfr_ci(deaths, confirmed, alpha=0.05):
-    if confirmed == 0:
-        return (0, 0)
-    ci_low, ci_high = binom.interval(1-alpha, confirmed, deaths/confirmed)
-    return ci_low/confirmed, ci_high/confirmed
+# 3.1 Suavizado de 7 días
+df_pais_daily_smooth = df_pais_daily.rolling(7, min_periods=1).mean()
 
-df_grouped["CFR_CI"] = df_grouped.apply(lambda row: cfr_ci(row[D], row[C]), axis=1)
+st.subheader("Series de tiempo suavizadas (7 días)")
+st.line_chart(df_pais_daily_smooth)
 
-# ———————————————————————————————————————————————
-# Selección de país y visualización de métricas
-# ———————————————————————————————————————————————
-st.header("📊 Métricas por país")
+# 3.2 Modelo SARIMA y pronóstico a 14 días
+st.subheader("Pronóstico a 14 días con SARIMA")
+forecast_horizon = 14
 
-pais_seleccionado = st.selectbox("Selecciona un país", df_grouped["Country"].tolist())
-df_pais = df_grouped[df_grouped["Country"] == pais_seleccionado].iloc[0]
+# Para pronosticar Confirmados
+y_cases = df_pais_daily_smooth[C]
+y_deaths = df_pais_daily_smooth[D]
 
-st.subheader(f"Métricas de COVID-19 en {pais_seleccionado}")
+# Configuración SARIMA simple (p,d,q)(P,D,Q,s)
+sarima_order = (1,1,1)
+seasonal_order = (1,1,1,7)  # semanal
 
-# Mostrar métricas clave con st.metric
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Confirmados", f"{df_pais[C]:,}")
-col2.metric("Fallecidos", f"{df_pais[D]:,}")
-col3.metric("CFR", f"{df_pais['CFR']*100:.2f}%")
-col4.metric("Muertes/100k", f"{df_pais['Deaths_per_100k']:.2f}")
+try:
+    model_cases = SARIMAX(y_cases, order=sarima_order, seasonal_order=seasonal_order)
+    results_cases = model_cases.fit(disp=False)
+    forecast_cases = results_cases.get_forecast(steps=forecast_horizon)
+    mean_cases = forecast_cases.predicted_mean
+    conf_cases = forecast_cases.conf_int()
 
-# Intervalo de confianza para CFR
-ci_low, ci_high = df_pais["CFR_CI"]
-st.write(f"Intervalo de confianza CFR: {ci_low*100:.2f}% – {ci_high*100:.2f}%")
+    model_deaths = SARIMAX(y_deaths, order=sarima_order, seasonal_order=seasonal_order)
+    results_deaths = model_deaths.fit(disp=False)
+    forecast_deaths = results_deaths.get_forecast(steps=forecast_horizon)
+    mean_deaths = forecast_deaths.predicted_mean
+    conf_deaths = forecast_deaths.conf_int()
+except Exception as e:
+    st.error(f"Error al entrenar SARIMA: {e}")
+    mean_cases, conf_cases, mean_deaths, conf_deaths = None, None, None, None
+
+# 3.3 Validación (Backtesting) usando MAE y MAPE
+if len(y_cases) > forecast_horizon:
+    train = y_cases[:-forecast_horizon]
+    test = y_cases[-forecast_horizon:]
+
+    model_bt = SARIMAX(train, order=sarima_order, seasonal_order=seasonal_order)
+    results_bt = model_bt.fit(disp=False)
+    pred_bt = results_bt.get_forecast(steps=forecast_horizon).predicted_mean
+
+    mae = mean_absolute_error(test, pred_bt)
+    mape = mean_absolute_percentage_error(test, pred_bt)
+    st.write(f"Backtesting - Confirmados: MAE={mae:.2f}, MAPE={mape*100:.2f}%")
+
+# 3.4 Gráfica de forecast con bandas de confianza
+if mean_cases is not None:
+    plt.figure(figsize=(12,5))
+    plt.plot(y_cases.index, y_cases, label="Casos observados")
+    plt.plot(mean_cases.index, mean_cases, label="Forecast casos", color="orange")
+    plt.fill_between(conf_cases.index, conf_cases.iloc[:,0], conf_cases.iloc[:,1], color="orange", alpha=0.2)
+
+    plt.plot(y_deaths.index, y_deaths, label="Muertes observadas")
+    plt.plot(mean_deaths.index, mean_deaths, label="Forecast muertes", color="red")
+    plt.fill_between(conf_deaths.index, conf_deaths.iloc[:,0], conf_deaths.iloc[:,1], color="red", alpha=0.2)
+
+    plt.title(f"Forecast a 14 días - {pais_model}")
+    plt.xlabel("Fecha")
+    plt.ylabel("Casos / Muertes")
+    plt.legend()
+    st.pyplot(plt)
+
