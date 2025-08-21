@@ -125,16 +125,26 @@ st.dataframe(subset_plot.describe().T)
 st.header("2) Estadística descriptiva y avanzada")
 
 # 2.1. Métricas clave por país: Confirmados, Fallecidos, CFR y tasas por 100k
-df_grouped = df.groupby(country_col).agg({
-    C: "sum",
-    D: "sum"
-}).reset_index()
-df_grouped["CFR"] = df_grouped[D] / df_grouped[C]
-# Si la población no está disponible, asumimos 1M para tasa
-df_grouped["Confirmed_per_100k"] = df_grouped[C] / 1e6 * 100000
-df_grouped["Deaths_per_100k"] = df_grouped[D] / 1e6 * 100000
-st.subheader("Métricas por país")
-st.dataframe(df_grouped.sort_values(D, ascending=False))
+st.header("📊 Métricas por país seleccionadas")
+
+# Selección del país
+pais_seleccionado = st.selectbox("Selecciona un país", df_grouped[country_col].tolist())
+
+# Filtrar datos
+df_pais = df_grouped[df_grouped[country_col] == pais_seleccionado].iloc[0]
+
+# Mostrar métricas clave con st.metric
+st.subheader(f"Métricas de COVID-19 en {pais_seleccionado}")
+
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Confirmados", f"{df_pais[C]:,}")
+col2.metric("Fallecidos", f"{df_pais[D]:,}")
+col3.metric("CFR", f"{df_pais['CFR']*100:.2f}%")
+col4.metric("Muertes/100k", f"{df_pais['Deaths_per_100k']:.2f}")
+
+# Intervalo de confianza para CFR
+ci_low, ci_high = df_pais["CFR_CI"]
+st.write(f"Intervalo de confianza CFR: {ci_low*100:.2f}% – {ci_high*100:.2f}%")
 
 # 2.2. Intervalos de confianza para CFR (binomial)
 from scipy.stats import binom
