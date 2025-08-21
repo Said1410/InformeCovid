@@ -118,3 +118,76 @@ subset_plot = subset.head(25)
 # Streamlit no tiene boxplot nativo, así que mostramos estadísticas resumen en tabla
 st.write("Resumen estadístico (simulación de boxplot):")
 st.dataframe(subset_plot.describe().T)
+
+# ———————————————————————————————————————————————
+# 2. Estadística descriptiva y avanzada
+# ———————————————————————————————————————————————
+st.header("2) Estadística descriptiva y avanzada")
+
+# 2.1. Métricas clave por país: Confirmados, Fallecidos, CFR y tasas por 100k
+df_grouped = df.groupby(country_col).agg({
+    C: "sum",
+    D: "sum"
+}).reset_index()
+df_grouped["CFR"] = df_grouped[D] / df_grouped[C]
+# Si la población no está disponible, asumimos 1M para tasa
+df_grouped["Confirmed_per_100k"] = df_grouped[C] / 1e6 * 100000
+df_grouped["Deaths_per_100k"] = df_grouped[D] / 1e6 * 100000
+st.subheader("Métricas por país")
+st.dataframe(df_grouped.sort_values(D, ascending=False))
+
+# 2.2. Intervalos de confianza para CFR (binomial)
+from scipy.stats import binom
+def cfr_ci(deaths, confirmed, alpha=0.05):
+    if confirmed == 0:
+        return (0, 0)
+    ci_low, ci_upp = binom.interval(1-alpha, confirmed, deaths/confirmed)
+    return ci_low/confirmed, ci_upp/confirmed
+
+df_grouped["CFR_CI"] = df_grouped.apply(lambda row: cfr_ci(row[D], row[C]), axis=1)
+st.subheader("Intervalos de confianza de CFR")
+st.dataframe(df_grouped[[country_col, "CFR", "CFR_CI"]])
+
+# 2.3. Test de hipótesis de proporciones para comparar CFR entre dos países
+st.subheader("Comparación de CFR entre dos países")
+pais1 = st.selectbox("País 1", df_grouped[country_col].tolist())
+pais2 = st.selectbox("País 2", df_grouped[country_col].tolist(), index=1)
+
+from statsmodels.stats.proportion import proportions_ztest
+d1 = int(df_grouped.loc[df_grouped[country_col]==pais1, D])
+n1 = int(df_grouped.loc[df_grouped[country_col]==pais1, C])
+d2 = int(df_grouped.loc[df_grouped[country_col]==pais2, D])
+n2 = int(df_grouped.loc[df_grouped[country_col]==pais2, C])
+
+stat, pval = proportions_ztest([d1, d2], [n1, n2])
+st.write(f"Z-test estadístico: {stat:.3f}, p-value: {pval:.3f}")
+
+# 2.4. Detección de outliers usando Z-score
+from scipy.stats import zscore
+df_grouped["zscore_deaths"] = zscore(df_grouped[D].fillna(0))
+outliers = df_grouped[df_grouped["zscore_deaths"].abs() > 3]
+st.subheader("Outliers en fallecidos (|Z|>3)")
+st.dataframe(outliers[[country_col, D, "zscore_deaths"]])
+
+# 2.5. Gráfico de control (3σ) de muertes diarias
+st.subheader("Gráfico de control (3σ) de muertes")
+# Si hay columna de fecha
+if "Last_Update" in df.columns:
+    df["Last_Update"] = pd.to_datetime(df["Last_Update"])
+    daily_deaths = df.groupby("Last_Update")[D].sum()
+else:
+    # fallback si no hay fecha
+    daily_deaths = df.groupby(country_col)[D].sum()
+
+mean_deaths = daily_deaths.mean()
+std_deaths = daily_deaths.std()
+import matplotlib.pyplot as plt
+
+fig, ax = plt.subplots(figsize=(12,5))
+ax.plot(daily_deaths.index, daily_deaths.values, marker="o", label="Muertes diarias")
+ax.axhline(mean_deaths, color="green", linestyle="--", label="Media")
+ax.axhline(mean_deaths + 3*std_deaths, color="red", linestyle="--", label="+3σ")
+ax.axhline(mean_deaths - 3*std_deaths, color="red", linestyle="--", label="-3σ")
+plt.xticks(rotation=45)
+ax.legend()
+st.pyplot(fig)
